@@ -189,9 +189,11 @@ func main() {
 
 ## The Playground
 
-To see how you can experiment and play around with a local poller instance, take a look [here](./cmd/playground).
+To see how you can experiment and play around with a local SQS and poller instance, take a look [here](./cmd/playground).
 
 ## Dependencies
+
+* Go Version 1.13+
 
 Just in case you was worried about dependency bloat, the core package functions only rely on two third party modules, which are:
 
