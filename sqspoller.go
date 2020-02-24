@@ -18,8 +18,8 @@ var (
 	ErrRequestTimeout         = errors.New("ErrRequestTimeout: requesting message from queue timed out")
 	ErrShutdownNow            = errors.New("ErrShutdownNow: poller was suddenly shutdown")
 	ErrShutdownGraceful       = errors.New("ErrShutdownGraceful: poller could not shutdown gracefully in time")
-	ErrAlreadyShuttingDown    = errors.New("ErrAlreadyShuttingDown: poller is already in the process of shutting down")
-	ErrAlreadyRunning         = errors.New("ErrAlreadyRunning: poller is already running")
+	ErrNotCloseable           = errors.New("ErrNotCloseable: poller is either stopped or already shutting down")
+	ErrNotRunnable            = errors.New("ErrNotRunnable: poller is either already running or shutting down")
 	ErrIntegrityIssue         = errors.New("ErrIntegrityIssue: unknown integrity issue")
 )
 
@@ -67,6 +67,7 @@ type Poller struct {
 	// Holds the time of the last poll request that was made. This can be checked
 	// periodically, to confirm the Poller is running as expected.
 	LastPollTime time.Time
+
 	// Maximum time interval between each poll when poll requests are returning
 	// empty responses.
 	IdlePollInterval time.Duration
@@ -97,8 +98,9 @@ type Poller struct {
 	// duration.
 	queueEmpty bool
 
-	running        int64          // 1 if Poller is in running state, 0 if not.
-	shuttingDown   int64          // 1 if Poller is in the process of shutting down, 0 if not.
+	// runStatus tells us the running status of the poller, 0 for off, 1 for running
+	// and 2 for shutting down.
+	runStatus      int64
 	shutdown       chan *shutdown // channel to send shutdown instructions on.
 	shutdownErrors chan error     // channel to send errors on shutdown.
 	stopRequest    chan struct{}  // channel to send request to block polling
@@ -157,7 +159,7 @@ func (p *Poller) Run() error {
 	if err := p.checkAndSetRunningStatus(); err != nil {
 		return err
 	}
-	defer p.resetRunState()
+	defer p.resetRunStatus()
 	if err := p.validateSetup(); err != nil {
 		return err
 	}
@@ -183,7 +185,7 @@ func (p *Poller) Run() error {
 				return err
 			}
 		case sd := <-p.shutdown:
-			return p.handleShutdown(sd, pollingErrors, cancel)
+			return p.handleShutdown(sd, pollingErrors)
 		}
 
 	}
@@ -193,10 +195,13 @@ func (p *Poller) Run() error {
 // returned on the returned channel.
 func (p *Poller) poll(ctx context.Context, msgHandler MessageHandler) <-chan error {
 
-	errorChan := make(chan error)
+	// Add buffer of one, so that the polling cycle can finish if the error is
+	// not collected. Without the buffer, this may leak a blocked goroutine if
+	// the poller exits due to a non-graceful shutdown.
+	pollingErrors := make(chan error, 1)
 
 	go func() {
-		defer close(errorChan)
+		defer close(pollingErrors)
 
 		for {
 			p.LastPollTime = time.Now()
@@ -208,28 +213,30 @@ func (p *Poller) poll(ctx context.Context, msgHandler MessageHandler) <-chan err
 			// Make request to SQS queue for message.
 			out, sqsErr := p.receiveMessage(ctx)
 
-			// Handle ReceiveMessageWithContext results in separate goroutine.
-			// and listen for errors on error channel.
-			handlerErrors := p.handle(ctx, msgHandler, out, sqsErr)
-
-			// Wait for msgHandler to handle message and check returned errors.
-			if err := waitForError(ctx, handlerErrors); err != nil {
-				errorChan <- err
+			// Handle the results returned from the request for new messages
+			// from the SQS queue.
+			if err := p.handle(ctx, msgHandler, out, sqsErr); err != nil {
+				pollingErrors <- err
 				return
 			}
 
-			// handle polling back off if message responses from queue are empty.
+			// Handle polling back off if message responses from queue are empty.
 			if err := p.handlePollInterval(ctx); err != nil {
-				errorChan <- err
+				pollingErrors <- err
 				return
 			}
 
-			errorChan <- nil
-			p.checkForStopRequests()
+			// Remember to return nil on the channel if everything was successful.
+			pollingErrors <- nil
+
+			// Stop polling if stop request has been received.
+			if p.stopRequestReceived() {
+				break
+			}
 		}
 	}()
 
-	return errorChan
+	return pollingErrors
 }
 
 // receiveMessage applies the request timeout to the context object calling the
@@ -257,37 +264,23 @@ func (p *Poller) receiveMessage(ctx context.Context) (*sqs.ReceiveMessageOutput,
 }
 
 // handle handles the results from the call to sqs.ReceiveMessageWithContext
-// function, by passing the results through the message and error handlers. The
-// function returns a channel for which the caller can listen on to receive the
-// resulting error.
-func (p *Poller) handle(ctx context.Context, msgHandler MessageHandler, out *sqs.ReceiveMessageOutput, sqsErr error) <-chan error {
-	handlerErrors := make(chan error)
+// function, by passing the results through the message and error handlers.
+func (p *Poller) handle(ctx context.Context, msgHandler MessageHandler, out *sqs.ReceiveMessageOutput, sqsErr error) error {
+	if sqsErr != nil {
 
-	go func() {
-		defer close(handlerErrors)
-
-		if sqsErr != nil {
-
-			// call error handler is sqs error is not nil.
-			if err := p.errorHandler(ctx, sqsErr); err != nil {
-
-				// if error was not resolved in handler
-				// then send error into channel and exit.
-				handlerErrors <- err
-				return
-			}
+		// call error handler if sqs error is not nil.
+		if err := p.errorHandler(ctx, sqsErr); err != nil {
+			return err
 		}
+	}
 
-		// determine queue empty states from message output.
-		p.queueEmpty = messageOutputIsEmpty(out)
+	// determine queue empty states from message output.
+	p.queueEmpty = messageOutputIsEmpty(out)
 
-		// handle message if there was no sqs error or if the error was resolved
-		if err := msgHandler(ctx, p.client, convertMessage(out, p.client, p.queueURL)); err != nil {
-			handlerErrors <- err
-			return
-		}
-		handlerErrors <- nil
-	}()
+	// handle message if there was no sqs error or if the error was resolved
+	if err := msgHandler(ctx, p.client, convertMessage(out, p.client, p.queueURL)); err != nil {
+		return err
+	}
 
-	return handlerErrors
+	return nil
 }
