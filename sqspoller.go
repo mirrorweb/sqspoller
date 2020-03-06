@@ -7,20 +7,40 @@ import (
 	"github.com/aws/aws-sdk-go/aws/request"
 	"github.com/aws/aws-sdk-go/service/sqs"
 	"github.com/google/uuid"
+	"sync"
 	"time"
 )
 
 var (
-	ErrNoMessageHandler       = errors.New("ErrNoMessageHandler: no message handler set on poller instance")
-	ErrNoErrorHandler         = errors.New("ErrNoErrorHandler: no error handler set on poller instance")
+	// ErrNoMessageHandler occurs when the caller tries to run the poller before attaching a MessageHandler.
+	ErrNoMessageHandler = errors.New("ErrNoMessageHandler: no message handler set on poller instance")
+
+	// ErrNoErrorHandler occurs when the caller tries to run the poller before attaching an ErrorHandler.
+	ErrNoErrorHandler = errors.New("ErrNoErrorHandler: no error handler set on poller instance")
+
+	// ErrNoReceiveMessageParams occurs when the caller tries to run the poller before setting the ReceiveMessageParams.
 	ErrNoReceiveMessageParams = errors.New("ErrNoReceiveMessageParams: no ReceiveMessage parameters have been set")
-	ErrHandlerTimeout         = errors.New("ErrHandlerTimeout: messageHandler took to long to process message")
-	ErrRequestTimeout         = errors.New("ErrRequestTimeout: requesting message from queue timed out")
-	ErrShutdownNow            = errors.New("ErrShutdownNow: poller was suddenly shutdown")
-	ErrShutdownGraceful       = errors.New("ErrShutdownGraceful: poller could not shutdown gracefully in time")
-	ErrNotCloseable           = errors.New("ErrNotCloseable: poller is either stopped or already shutting down")
-	ErrNotRunnable            = errors.New("ErrNotRunnable: poller is either already running or shutting down")
-	ErrIntegrityIssue         = errors.New("ErrIntegrityIssue: unknown integrity issue")
+
+	// ErrHandlerTimeout occurs when the MessageHandler times out before processing the message.
+	ErrHandlerTimeout = errors.New("ErrHandlerTimeout: message handler took to long to process message")
+
+	// ErrRequestTimeout occurs when the poller times out while requesting for a message off the SQS queue.
+	ErrRequestTimeout = errors.New("ErrRequestTimeout: requesting message from queue timed out")
+
+	// ErrShutdownNow occurs when the poller is suddenly shutdown.
+	ErrShutdownNow = errors.New("ErrShutdownNow: poller was suddenly shutdown")
+
+	// ErrShutdownGraceful occurs when the poller fails to shutdown gracefully.
+	ErrShutdownGraceful = errors.New("ErrShutdownGraceful: poller could not shutdown gracefully in time")
+
+	// ErrNotCloseable occurs when the caller tries to shut down the poller is already stopped or in the process of shutting down.
+	ErrNotCloseable = errors.New("ErrNotCloseable: poller is either stopped or already shutting down")
+
+	// ErrNotRunnable occurs when the caller tries to run the poller while the poller is already running or shutting down.
+	ErrNotRunnable = errors.New("ErrNotRunnable: poller is either already running or shutting down")
+
+	// ErrNotRunnable occurs when there is an integrity issue in the system.
+	ErrIntegrityIssue = errors.New("ErrIntegrityIssue: unknown integrity issue")
 )
 
 const (
@@ -61,6 +81,8 @@ type TrackingValue struct {
 // Poller is an instance of the polling framework, it contains the SQS client
 // and provides a simple API for polling an SQS queue.
 type Poller struct {
+	*sync.Mutex
+
 	client   *sqs.SQS
 	queueURL string
 
@@ -164,9 +186,6 @@ func (p *Poller) Run() error {
 		return err
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
 	// Apply middleware upon starting.
 	// Apply the timeout as the innermost middleware, so that timeout errors
 	// can be caught by custom middleware to stop the poller from exiting.
@@ -175,7 +194,7 @@ func (p *Poller) Run() error {
 	msgHandler = wrapMiddleware(msgHandler, p.outerMiddleware...)
 
 	// Start polling
-	pollingErrors := p.poll(ctx, msgHandler)
+	pollingErrors := p.poll(msgHandler)
 
 	// Handle polling errors and shutdown signals
 	for {
@@ -193,7 +212,7 @@ func (p *Poller) Run() error {
 
 // poll continuously polls the SQS queue in a separate goroutine, the errors are
 // returned on the returned channel.
-func (p *Poller) poll(ctx context.Context, msgHandler MessageHandler) <-chan error {
+func (p *Poller) poll(msgHandler MessageHandler) <-chan error {
 
 	// Add buffer of one, so that the polling cycle can finish if the error is
 	// not collected. Without the buffer, this may leak a blocked goroutine if
@@ -208,7 +227,7 @@ func (p *Poller) poll(ctx context.Context, msgHandler MessageHandler) <-chan err
 
 			// add tracking info to context object
 			v := TrackingValue{TraceID: uuid.New().String(), Now: time.Now()}
-			ctx = context.WithValue(ctx, TrackingKey, &v)
+			ctx := context.WithValue(context.Background(), TrackingKey, &v)
 
 			// Make request to SQS queue for message.
 			out, sqsErr := p.receiveMessage(ctx)
@@ -220,8 +239,9 @@ func (p *Poller) poll(ctx context.Context, msgHandler MessageHandler) <-chan err
 				return
 			}
 
-			// Handle polling back off if message responses from queue are empty.
-			if err := p.handlePollInterval(ctx); err != nil {
+			// Handle poll interval, back off the wait time if message responses
+			// from queue are empty.
+			if err := p.handlePollInterval(); err != nil {
 				pollingErrors <- err
 				return
 			}
