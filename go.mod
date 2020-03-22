@@ -13,5 +13,5 @@ require (
 	github.com/jmespath/go-jmespath v0.3.0 // indirect
 	github.com/opencontainers/go-digest v1.0.0-rc1 // indirect
 	golang.org/x/net v0.0.0-20200320220750-118fecf932d8 // indirect
-	golang.org/x/sys v0.0.0-20200320181252-af34d8274f85 // indirect
+	golang.org/x/sys v0.0.0-20200321134203-328b4cd54aae // indirect
 )
