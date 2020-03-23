@@ -58,6 +58,11 @@ jobs:
           name: Update dependencies to latest minor version
           command: go get -u ./...
 
+      # Clean up dependencies files
+      - run:
+          name: Remove outdated dependencies
+          command: go mod tidy
+
       # Run the tests with updated dependencies
       - run:
           name: Run tests
@@ -111,7 +116,6 @@ workflows:
   test_on_commit:
     jobs:
       - test
-
 
   # Keep dependencies up to date, run on dev branch nightly.
   nightly_build:
