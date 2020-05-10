@@ -12,5 +12,5 @@ require (
 	github.com/google/uuid v1.1.1
 	github.com/opencontainers/go-digest v1.0.0-rc1 // indirect
 	golang.org/x/net v0.0.0-20200506145744-7e3656a0809f // indirect
-	golang.org/x/sys v0.0.0-20200508214444-3aab700007d7 // indirect
+	golang.org/x/sys v0.0.0-20200509044756-6aff5f38e54f // indirect
 )
