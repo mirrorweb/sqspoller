@@ -8,8 +8,8 @@ import (
 	"errors"
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/sqs"
-	"github.com/kinluek/sqspoller"
-	"github.com/kinluek/sqspoller/internal/testing/testsetup"
+	"github.com/mirrorweb/sqspoller"
+	"github.com/mirrorweb/sqspoller/internal/testing/testsetup"
 	"os"
 	"sync"
 	"testing"
@@ -48,7 +48,7 @@ func (p *PollerTests) BasicPolling(t *testing.T) {
 	// Put a message in the queue, ready to be received by the poller.
 	messageBody := "message-body"
 	sendResp, err := p.sqsClient.SendMessage(&sqs.SendMessageInput{
-		QueueUrl:   aws.String(p.queueURL),
+		QueueUrl:    aws.String(p.queueURL),
 		MessageBody: aws.String(messageBody),
 	})
 	if err != nil {

@@ -7,7 +7,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws/credentials"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/sqs"
-	"github.com/kinluek/sqspoller/internal/testing/docker"
+	"github.com/mirrorweb/sqspoller/internal/testing/docker"
 	"log"
 	"os"
 	"strings"
