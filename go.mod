@@ -1,4 +1,4 @@
-module github.com/kinluek/sqspoller
+module github.com/mirrorweb/sqspoller
 
 go 1.13
 
